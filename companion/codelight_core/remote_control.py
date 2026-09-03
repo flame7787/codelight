@@ -460,6 +460,7 @@ class RemoteRequestManager:
             self.permission_resolved_payload(entry, outcome, by or "", persistence),
             "PermissionResolved",
         )
+        self.update_session(entry["session_id"], "ended", entry["agent_id"])
         self.push_status()
 
     def _question_waiter(self, entry: dict) -> None:
@@ -484,4 +485,5 @@ class RemoteRequestManager:
             self.question_resolved_payload(entry, by or ""),
             "QuestionResolved",
         )
+        self.update_session(entry["session_id"], "ended", entry["agent_id"])
         self.push_status()

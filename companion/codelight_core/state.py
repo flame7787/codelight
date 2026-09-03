@@ -115,7 +115,10 @@ class CodelightState:
                     info["cwd"] = cwd
                 info["agent_id"] = normalized_agent
                 self._sessions[session_id] = info
-            if state in ("working", "waiting"):
+            # Waiting prompts should be shown while they are pending, but they
+            # should not permanently hijack the idle fallback once resolved.
+            # Only actual work marks an agent as the last used one.
+            if state == "working":
                 self._last_active_agent = normalized_agent
 
     def active_transcript(self) -> ActiveTranscript:
@@ -171,6 +174,8 @@ class CodelightState:
         per_agent: dict[str, str] = {}
         with self._lock:
             last_agent = self.normalize_agent_id(self._last_active_agent)
+            selected_agent = last_agent
+            selected_time = 0.0
             stale = [
                 sid for sid, info in self._sessions.items()
                 if sid not in pending_session_ids
@@ -193,13 +198,17 @@ class CodelightState:
                     overall = "working"
                 elif state == "waiting" and overall != "working":
                     overall = "waiting"
+                event_time = float(info["time"])
+                if event_time > selected_time:
+                    selected_agent = agent_id
+                    selected_time = event_time
             # Every configured agent stays visible (idle) even with no active
             # session — agents without a usage meter would otherwise vanish.
             for agent_id in self._enabled_agents:
                 per_agent.setdefault(agent_id, "idle")
             if not per_agent:
-                per_agent[last_agent] = "idle"
-            return active, overall, per_agent, last_agent
+                per_agent[selected_agent] = "idle"
+            return active, overall, per_agent, selected_agent
 
     def update_usage(
         self,

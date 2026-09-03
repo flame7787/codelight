@@ -1053,6 +1053,25 @@ class StateSnapshotTests(unittest.TestCase):
         self.assertEqual(copilot_payload["weekly_pct"], 0.5)
         self.assertEqual(copilot_payload["session_pct"], 0.0)
 
+    def test_waiting_prompt_does_not_hijack_idle_fallback_after_it_ends(self):
+        state = self.make_state()
+        state.update_usage(usages={
+            "claude": {"session_pct": 0.27, "weekly_pct": 0.23},
+            "codex": {"weekly_pct": 0.21},
+        })
+
+        state.update_session("claude-session", "working", agent_id="claude")
+        state.update_session("claude-session", "ended", agent_id="claude")
+        self.assertEqual(state.status_snapshot()["agent_id"], "claude")
+
+        state.update_session("codex-perm", "waiting", agent_id="codex")
+        self.assertEqual(state.status_snapshot()["agent_id"], "codex")
+
+        state.update_session("codex-perm", "ended", agent_id="codex")
+        payload = state.status_snapshot()
+        self.assertEqual(payload["agent_id"], "claude")
+        self.assertEqual(payload["session_pct"], 0.27)
+
     def test_pending_session_is_not_pruned_by_waiting_timeout(self):
         state = self.make_state()
         state.update_session("question-session", "waiting", agent_id="claude")
@@ -1761,7 +1780,7 @@ class RemotePayloadTests(unittest.TestCase):
 
 class RemoteControlTests(unittest.TestCase):
     @staticmethod
-    def make_manager(pending, allow_tool_calls):
+    def make_manager(pending, allow_tool_calls, update_session=None):
         def allow_tool(tool):
             allow_tool_calls.append(tool)
             return True, tool
@@ -1777,7 +1796,7 @@ class RemoteControlTests(unittest.TestCase):
             permission_resolved_payload=lambda e, o, b, p: {},
             question_resolved_payload=lambda e, b: {},
             broadcast_remote=lambda p, s: None,
-            update_session=lambda s, st, a: None,
+            update_session=update_session or (lambda s, st, a: None),
             push_status=lambda: None,
             log=lambda m: None,
             allow_folder=lambda cwd: (True, cwd),
@@ -1806,6 +1825,54 @@ class RemoteControlTests(unittest.TestCase):
             "by": None,
             "expires": 10 ** 12,
         }
+
+    @staticmethod
+    def make_question_entry(request_id, session_id="s1"):
+        return {
+            "responder": lambda payload: None,
+            "id": request_id,
+            "session_id": session_id,
+            "agent_id": "codex",
+            "questions": [{"question": "Proceed?"}],
+            "cwd": "/tmp",
+            "event": threading.Event(),
+            "answers": None,
+            "by": None,
+            "expires": 10 ** 12,
+        }
+
+    def test_permission_waiter_ends_the_temporary_waiting_session(self):
+        pending = remote_control.PendingRequests()
+        updates: list[tuple[str, str, str]] = []
+        manager = self.make_manager(
+            pending, [], update_session=lambda s, st, a: updates.append((s, st, a)))
+        entry = self.make_permission_entry("req1", session_id="codex-perm")
+        entry["agent_id"] = "codex"
+        entry["decision"] = "allow"
+        entry["by"] = "test"
+        entry["event"].set()
+        pending.add_permission("req1", entry)
+
+        manager._permission_waiter(entry)
+
+        self.assertEqual(updates, [("codex-perm", "ended", "codex")])
+        self.assertIsNone(pending.pop_permission("req1"))
+
+    def test_question_waiter_ends_the_temporary_waiting_session(self):
+        pending = remote_control.PendingRequests()
+        updates: list[tuple[str, str, str]] = []
+        manager = self.make_manager(
+            pending, [], update_session=lambda s, st, a: updates.append((s, st, a)))
+        entry = self.make_question_entry("q1", session_id="codex-question")
+        entry["answers"] = {"answer": "yes"}
+        entry["by"] = "test"
+        entry["event"].set()
+        pending.add_question("q1", entry)
+
+        manager._question_waiter(entry)
+
+        self.assertEqual(updates, [("codex-question", "ended", "codex")])
+        self.assertIsNone(pending.pop_question("q1"))
 
     def test_session_tool_allowances_scope_and_cleanup(self):
         allowances = remote_control.SessionToolAllowances()
