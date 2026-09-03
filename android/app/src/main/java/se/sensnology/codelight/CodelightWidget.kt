@@ -105,6 +105,7 @@ class CodelightWidget : GlanceAppWidget() {
             !connected          -> "OFFLINE"
             else -> "$agentDisplay ${status.uppercase()}"
         }
+        val statusFontSize = statusFontSizeSp(size, statusLabel)
         val statusTextColor = if (!connected) Color(0xFF555555) else Color.Black
 
         val bgColor    = Color(0xFF1A1A1A)
@@ -159,11 +160,11 @@ class CodelightWidget : GlanceAppWidget() {
                         statusLabel,
                         style = TextStyle(
                             color      = ColorProvider(statusTextColor),
-                            fontSize   = 14.sp,
+                            fontSize   = statusFontSize,
                             fontWeight = FontWeight.Bold,
                             textAlign  = TextAlign.Center,
                         ),
-                        maxLines = 3,
+                        maxLines = 1,
                     )
                 }
             }
@@ -202,9 +203,11 @@ class CodelightWidget : GlanceAppWidget() {
                         statusLabel,
                         style = TextStyle(
                             color      = ColorProvider(statusTextColor),
-                            fontSize   = 18.sp,
+                            fontSize   = statusFontSize,
                             fontWeight = FontWeight.Bold,
+                            textAlign  = TextAlign.Center,
                         ),
+                        maxLines = 1,
                     )
                 }
             }
@@ -233,12 +236,42 @@ class CodelightWidget : GlanceAppWidget() {
                         statusLabel,
                         style = TextStyle(
                             color      = ColorProvider(statusTextColor),
-                            fontSize   = 18.sp,
+                            fontSize   = statusFontSize,
                             fontWeight = FontWeight.Bold,
+                            textAlign  = TextAlign.Center,
                         ),
+                        maxLines = 1,
                     )
                 }
             }
+        }
+    }
+
+    private fun statusFontSizeSp(size: DpSize, label: String) = when (size) {
+        SIZE_SMALL -> when {
+            label.length > 16 -> 10.sp
+            label.length > 12 -> 12.sp
+            else              -> 14.sp
+        }
+        SIZE_MEDIUM_TALL -> when {
+            label.length > 18 -> 12.sp
+            label.length > 14 -> 14.sp
+            else              -> 16.sp
+        }
+        SIZE_TALL -> when {
+            label.length > 18 -> 13.sp
+            label.length > 14 -> 15.sp
+            else              -> 17.sp
+        }
+        SIZE_WIDE_TALL -> when {
+            label.length > 16 -> 10.sp
+            label.length > 12 -> 12.sp
+            else              -> 14.sp
+        }
+        else -> when {
+            label.length > 22 -> 16.sp
+            label.length > 18 -> 18.sp
+            else              -> 22.sp
         }
     }
 
