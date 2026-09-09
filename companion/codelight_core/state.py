@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 
 DEFAULT_USAGE: dict[str, Any] = {
@@ -39,6 +39,8 @@ class CodelightState:
         agent_registry: dict[str, dict[str, str]],
         idle_window: int,
         idle_window_waiting: int,
+        initial_last_active_agent: str | None = None,
+        on_last_active_agent_changed: Callable[[str], None] | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._default_agent_id = default_agent_id
@@ -53,7 +55,9 @@ class CodelightState:
         # agent_id → {"sid", "path"}: newest transcript seen per agent, so a
         # client can request any conversation-capable agent's latest feed.
         self._transcripts_by_agent: dict[str, dict[str, str]] = {}
-        self._last_active_agent: str = default_agent_id
+        self._last_active_agent = self.normalize_agent_id(
+            initial_last_active_agent)
+        self._on_last_active_agent_changed = on_last_active_agent_changed
         # Configured agents shown as idle even without a usage meter or an
         # active session, so hook-only agents (no readable quota) stay visible.
         self._enabled_agents: set[str] = set()
@@ -92,6 +96,7 @@ class CodelightState:
         agent_id: str | None = None,
     ) -> None:
         normalized_agent = self.normalize_agent_id(agent_id)
+        persist_last_agent = False
         with self._lock:
             if transcript:
                 self._last_transcript = {
@@ -118,8 +123,11 @@ class CodelightState:
             # Waiting prompts should be shown while they are pending, but they
             # should not permanently hijack the idle fallback once resolved.
             # Only actual work marks an agent as the last used one.
-            if state == "working":
+            if state == "working" and normalized_agent != self._last_active_agent:
                 self._last_active_agent = normalized_agent
+                persist_last_agent = True
+        if persist_last_agent and self._on_last_active_agent_changed:
+            self._on_last_active_agent_changed(normalized_agent)
 
     def active_transcript(self) -> ActiveTranscript:
         with self._lock:

@@ -53,6 +53,7 @@ POLICY_PATH       = os.path.join(CODELIGHT_CONFIG_HOME, "policy.json")
 # separate from the user's hand-authored config.json so the daemon never
 # rewrites it.
 SETTINGS_PATH     = os.path.join(CODELIGHT_CONFIG_HOME, "settings.json")
+_settings_lock = threading.Lock()
 USAGE_INTERVAL      = 60   # seconds between usage API polls
 IDLE_WINDOW         = 600  # seconds before a silent "working" session is dropped
 IDLE_WINDOW_WAITING = 30   # seconds before a "waiting" session is dropped (subagents resolve quickly)
@@ -128,19 +129,36 @@ def _load_settings() -> dict:
 def _persist_agent_budget(agent_id: str, budget: float) -> None:
     """Write an app-set budget into settings.json (agent-scoped), preserving
     other settings. Never touches the user's config.json."""
-    settings = _load_settings()
-    agents = settings.setdefault("agents", {})
-    if not isinstance(agents, dict):
-        agents = settings["agents"] = {}
-    agents.setdefault(agent_id, {})
-    if not isinstance(agents[agent_id], dict):
-        agents[agent_id] = {}
-    agents[agent_id]["monthly_budget_usd"] = budget
+    with _settings_lock:
+        settings = _load_settings()
+        agents = settings.setdefault("agents", {})
+        if not isinstance(agents, dict):
+            agents = settings["agents"] = {}
+        agents.setdefault(agent_id, {})
+        if not isinstance(agents[agent_id], dict):
+            agents[agent_id] = {}
+        agents[agent_id]["monthly_budget_usd"] = budget
+        _write_settings(settings)
+
+
+def _write_settings(settings: dict) -> None:
     os.makedirs(CODELIGHT_CONFIG_HOME, exist_ok=True)
     tmp = SETTINGS_PATH + ".tmp"
     with open(tmp, "w") as f:
         json.dump(settings, f, indent=2)
     os.replace(tmp, SETTINGS_PATH)
+
+
+def _persist_last_active_agent(agent_id: str) -> None:
+    """Remember the idle fallback across companion restarts."""
+    try:
+        with _settings_lock:
+            settings = _load_settings()
+            settings["last_active_agent"] = agent_id
+            _write_settings(settings)
+    except Exception as e:
+        print(f"[settings] could not persist last active agent: {e}",
+              file=sys.stderr, flush=True)
 
 
 def _apply_persisted_budgets() -> None:
@@ -167,11 +185,14 @@ def _new_agent_registry(log=None) -> AgentRegistry:
 _agents = _new_agent_registry()
 AGENT_REGISTRY = _agents.display_registry()
 DEFAULT_AGENT_ID = _agents.default_agent_id
+_startup_settings = _load_settings()
 _state = CodelightState(
     default_agent_id=DEFAULT_AGENT_ID,
     agent_registry=AGENT_REGISTRY,
     idle_window=IDLE_WINDOW,
     idle_window_waiting=IDLE_WINDOW_WAITING,
+    initial_last_active_agent=_startup_settings.get("last_active_agent"),
+    on_last_active_agent_changed=_persist_last_active_agent,
 )
 for _agent_id in _agents.supported_agent_ids():
     if _agents.session_reset_supported(_agent_id):

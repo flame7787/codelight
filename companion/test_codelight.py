@@ -1053,6 +1053,27 @@ class StateSnapshotTests(unittest.TestCase):
         self.assertEqual(copilot_payload["weekly_pct"], 0.5)
         self.assertEqual(copilot_payload["session_pct"], 0.0)
 
+    def test_last_active_agent_can_be_restored_and_persisted(self):
+        persisted = []
+        state = CodelightState(
+            default_agent_id="codex",
+            agent_registry={
+                "claude": {"display": "Claude"},
+                "codex": {"display": "Codex"},
+            },
+            idle_window=600,
+            idle_window_waiting=30,
+            initial_last_active_agent="claude",
+            on_last_active_agent_changed=persisted.append,
+        )
+
+        self.assertEqual(state.status_snapshot()["agent_id"], "claude")
+        state.update_session("codex-session", "working", agent_id="codex")
+        self.assertEqual(persisted, ["codex"])
+        # Repeated working events must not rewrite settings unnecessarily.
+        state.update_session("codex-session", "working", agent_id="codex")
+        self.assertEqual(persisted, ["codex"])
+
     def test_waiting_prompt_does_not_hijack_idle_fallback_after_it_ends(self):
         state = self.make_state()
         state.update_usage(usages={
