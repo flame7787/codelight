@@ -630,7 +630,22 @@ def _push() -> None:
 
 def _consume_session_reset(agent_id: str, request_id: str = "") -> dict:
     aid = _state.normalize_agent_id(agent_id)
-    result = _agents.consume_session_reset(aid)
+    _log(f"[reset] {aid} requested")
+    try:
+        result = _agents.consume_session_reset(aid)
+    except Exception as e:
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        _log(f"[reset] {aid} failed: {e!r} — see stderr for traceback")
+        return {
+            "type": "session_reset_result",
+            "id": request_id,
+            "agent_id": aid,
+            "agent_display": _state.agent_display_name(aid),
+            "ok": False,
+            "outcome": "error",
+            "message": f"{type(e).__name__}: {e}",
+        }
     usage = result.get("usage")
     if isinstance(usage, dict):
         usage["session_reset_supported"] = True
@@ -651,7 +666,10 @@ def _consume_session_reset(agent_id: str, request_id: str = "") -> dict:
     reset_credits = current_usage.get("rateLimitResetCredits")
     if isinstance(reset_credits, dict):
         payload["rateLimitResetCredits"] = reset_credits
-    _log(f"[reset] {aid} → {payload['outcome'] or 'unknown'}")
+    reset_count = ""
+    if isinstance(reset_credits, dict):
+        reset_count = f" resetCredits={int(reset_credits.get('availableCount') or 0)}"
+    _log(f"[reset] {aid} → {payload['outcome'] or 'unknown'} ok={payload['ok']}{reset_count}")
     _push()
     return payload
 

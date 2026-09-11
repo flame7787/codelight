@@ -297,28 +297,32 @@ class CodexUsageTests(unittest.TestCase):
         self.assertEqual(usage["rate_limit_reset_available_count"], 2)
 
     def test_consume_session_reset_returns_outcome_and_refreshed_usage(self):
+        calls = []
+
         def rpc(requests):
-            self.assertEqual(
-                requests[0]["method"],
-                "account/rateLimitResetCredit/consume",
-            )
-            self.assertTrue(requests[0]["params"]["idempotencyKey"])
-            self.assertEqual(requests[1]["method"], "account/rateLimits/read")
-            return [
-                {"id": 2, "result": {"outcome": "reset"}},
-                {
-                    "id": 3,
-                    "result": {
-                        "rateLimits": {
-                            "primary": {
-                                "usedPercent": 0,
-                                "resetsAt": 2_000_000_000,
+            calls.append([request["method"] for request in requests])
+            if calls == [["account/rateLimitResetCredit/consume"]]:
+                self.assertTrue(requests[0]["params"]["idempotencyKey"])
+                return [{"id": 2, "result": {"outcome": "reset"}}]
+            if calls == [
+                ["account/rateLimitResetCredit/consume"],
+                ["account/rateLimits/read"],
+            ]:
+                return [
+                    {
+                        "id": 3,
+                        "result": {
+                            "rateLimits": {
+                                "primary": {
+                                    "usedPercent": 0,
+                                    "resetsAt": 2_000_000_000,
+                                },
                             },
+                            "rateLimitResetCredits": {"availableCount": 1},
                         },
-                        "rateLimitResetCredits": {"availableCount": 1},
                     },
-                },
-            ]
+                ]
+            self.fail(f"unexpected RPC call sequence: {calls}")
 
         result = codex_agent.consume_session_reset("/tmp/codex", rpc=rpc)
 

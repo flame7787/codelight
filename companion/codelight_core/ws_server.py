@@ -213,8 +213,10 @@ class CodelightWebsocketHub:
                         continue
                     client_name = await self._handle_client_message(
                         ws, message, client_name)
-            except Exception:
-                pass  # connection reset without close frame — normal on app restart
+            except Exception as e:
+                import traceback
+                print(f"[ws] client loop error: {e!r}", file=sys.stderr, flush=True)
+                traceback.print_exc(file=sys.stderr)
         finally:
             self.clients.discard(ws)
             self.permission_clients.discard(ws)
@@ -282,7 +284,13 @@ class CodelightWebsocketHub:
         if message_type == "session_reset_request":
             request_id = str(message.get("id") or "")
             agent_id = str(message.get("agent_id") or "")
+            print(f"[ws] session_reset_request agent_id={agent_id!r} "
+                  f"id={request_id!r}", file=sys.stderr, flush=True)
             result = self._consume_session_reset(agent_id, request_id)
+            print(f"[ws] session_reset_result agent_id={agent_id!r} "
+                  f"id={request_id!r} ok={bool(result.get('ok'))} "
+                  f"outcome={result.get('outcome')!r}",
+                  file=sys.stderr, flush=True)
             await ws.send(json.dumps(result))
             return client_name
 

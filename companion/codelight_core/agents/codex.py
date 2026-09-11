@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 from typing import Callable
 
@@ -170,6 +171,7 @@ def app_server_rpc(
     requests: list[dict],
     *,
     timeout: float = 8.0,
+    debug: bool = False,
 ) -> list[dict]:
     """Run Codex app-server for a small JSON-RPC exchange.
 
@@ -183,7 +185,7 @@ def app_server_rpc(
         ["codex", "app-server"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE if debug else subprocess.DEVNULL,
         text=True,
         env=env,
     )
@@ -191,6 +193,8 @@ def app_server_rpc(
     assert proc.stdout is not None
 
     def send(message: dict) -> None:
+        if debug:
+            print(f"[codex-rpc-debug] → {message}", file=sys.stderr, flush=True)
         proc.stdin.write(json.dumps(message) + "\n")
         proc.stdin.flush()
 
@@ -203,6 +207,8 @@ def app_server_rpc(
             line = proc.stdout.readline()
             if not line:
                 break
+            if debug:
+                print(f"[codex-rpc-debug] ← {line.rstrip()}", file=sys.stderr, flush=True)
             try:
                 message = json.loads(line)
             except Exception:
@@ -251,8 +257,17 @@ def app_server_rpc(
         except Exception:
             try:
                 proc.kill()
+                proc.wait(timeout=1)
             except Exception:
                 pass
+        if debug:
+            try:
+                leftover = proc.stderr.read() if proc.stderr else ""
+            except Exception:
+                leftover = ""
+            if leftover:
+                print(f"[codex-rpc-debug] app-server stderr:\n{leftover}",
+                      file=sys.stderr, flush=True)
 
 
 def rollout_path_for_session(code_home: str, session_id: str) -> str:
@@ -465,6 +480,40 @@ def get_app_server_usage(
     return None
 
 
+def _codex_limits_still_exhausted(result: dict) -> bool:
+    rate_limits = result.get("rateLimitsByLimitId")
+    codex_limits = rate_limits.get("codex") \
+        if isinstance(rate_limits, dict) else result.get("rateLimits")
+    if not isinstance(codex_limits, dict):
+        return False
+    if result.get("ordinaryUsageAllowed") is True:
+        return False
+    if codex_limits.get("rateLimitReachedType"):
+        return True
+    for window in (codex_limits.get("primary"), codex_limits.get("secondary")):
+        if not isinstance(window, dict):
+            continue
+        try:
+            if float(window.get("usedPercent") or 0.0) >= 100.0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _usage_log_summary(usage: dict | None) -> str:
+    if not isinstance(usage, dict):
+        return "usage=unavailable"
+    parts = []
+    for key in ("session_pct", "weekly_pct"):
+        if key in usage:
+            parts.append(f"{key}={float(usage.get(key) or 0.0) * 100:.0f}%")
+    credits = usage.get("rateLimitResetCredits")
+    if isinstance(credits, dict):
+        parts.append(f"resetCredits={int(credits.get('availableCount') or 0)}")
+    return " ".join(parts) if parts else "usage=empty"
+
+
 def consume_session_reset(
     code_home: str,
     *,
@@ -472,18 +521,27 @@ def consume_session_reset(
 ) -> dict:
     call = rpc or (lambda requests: app_server_rpc(code_home, requests))
     idempotency_key = str(uuid.uuid4())
-    responses = call([
-        {
-            "method": "account/rateLimitResetCredit/consume",
-            "id": 2,
-            "params": {"idempotencyKey": idempotency_key},
-        },
-        {"method": "account/rateLimits/read", "id": 3},
-    ])
+    print("[reset] codex consume rateLimitResetCredit",
+          file=sys.stderr, flush=True)
+    try:
+        responses = call([
+            {
+                "method": "account/rateLimitResetCredit/consume",
+                "id": 2,
+                "params": {"idempotencyKey": idempotency_key},
+            },
+        ])
+    except Exception as e:
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        print(f"[reset] codex app-server consume failed: {e!r}",
+              file=sys.stderr, flush=True)
+        raise
     by_id = {response.get("id"): response for response in responses}
     consume_response = by_id.get(2, {})
-    read_response = by_id.get(3, {})
     if consume_response.get("error"):
+        print(f"[reset] codex consume error: {consume_response['error']}",
+              file=sys.stderr, flush=True)
         return {
             "ok": False,
             "outcome": "error",
@@ -493,9 +551,33 @@ def consume_session_reset(
     result = consume_response.get("result")
     if isinstance(result, dict):
         outcome = str(result.get("outcome") or "unknown")
-    read_result = read_response.get("result")
-    usage = usage_from_app_server_rate_limits(read_result) \
-        if isinstance(read_result, dict) else None
+    usage = None
+    if outcome in ("reset", "alreadyRedeemed", "nothingToReset", "noCredit"):
+        for attempt, delay in enumerate((0.0, 0.75, 1.5, 2.5), start=1):
+            if delay:
+                time.sleep(delay)
+            try:
+                read_responses = call([
+                    {"method": "account/rateLimits/read", "id": 3},
+                ])
+            except Exception as e:
+                print(f"[reset] codex post-reset read failed: {e!r}",
+                      file=sys.stderr, flush=True)
+                break
+            read_response = read_responses[0] if read_responses else {}
+            read_result = read_response.get("result")
+            usage = usage_from_app_server_rate_limits(read_result) \
+                if isinstance(read_result, dict) else None
+            stale = (
+                isinstance(read_result, dict)
+                and outcome == "reset"
+                and _codex_limits_still_exhausted(read_result)
+            )
+            print(f"[reset] codex post-reset read attempt={attempt} "
+                  f"stale={stale} {_usage_log_summary(usage)}",
+                  file=sys.stderr, flush=True)
+            if not stale:
+                break
     return {
         "ok": outcome in ("reset", "alreadyRedeemed"),
         "outcome": outcome,
