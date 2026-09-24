@@ -6,21 +6,48 @@ import socket
 import time
 
 
+WINDOWS_HOOK_HOST = "127.0.0.1"
+WINDOWS_HOOK_PORT = 8766
+
+
+def _connect_hook_socket(socket_path: str, timeout: float):
+    """Connect to the local hook transport.
+
+    Unix/macOS/Linux keep using the existing Unix-domain socket. Windows
+    falls back to a loopback-only TCP socket because some Windows Python
+    builds don't expose AF_UNIX.
+    """
+    if hasattr(socket, "AF_UNIX"):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        address = socket_path
+    else:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        address = (WINDOWS_HOOK_HOST, WINDOWS_HOOK_PORT)
+
+    sock.settimeout(timeout)
+    sock.connect(address)
+    return sock
+
+
 def send_json(socket_path: str, payload: dict, *, timeout: float,
               newline: bool = False) -> bool:
-    """Best-effort fire-and-forget JSON send to the daemon Unix socket."""
+    """Best-effort fire-and-forget JSON send to the local daemon."""
+    sock = None
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        sock.connect(socket_path)
+        sock = _connect_hook_socket(socket_path, timeout)
         raw = json.dumps(payload)
         if newline:
             raw += "\n"
         sock.sendall(raw.encode())
-        sock.close()
         return True
     except Exception:
         return False
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
 
 
 def request_json(socket_path: str, payload: dict, *, connect_timeout: float,
@@ -28,9 +55,7 @@ def request_json(socket_path: str, payload: dict, *, connect_timeout: float,
     """Send a JSON request and read one newline-delimited JSON response."""
     sock = None
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(connect_timeout)
-        sock.connect(socket_path)
+        sock = _connect_hook_socket(socket_path, connect_timeout)
         sock.sendall((json.dumps(payload) + "\n").encode())
 
         sock.settimeout(response_timeout)
