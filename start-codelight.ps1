@@ -32,6 +32,53 @@ function Find-CodexExecutable {
     return $null
 }
 
+function Enable-HiddenPythonChildProcesses {
+    if ($env:OS -ne "Windows_NT") {
+        return
+    }
+
+    $shimDir = Join-Path ([System.IO.Path]::GetTempPath()) "codelight-python-shim"
+    $shimFile = Join-Path $shimDir "sitecustomize.py"
+
+    New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
+
+    # sitecustomize.py is imported automatically by normal Python startup.
+    # It keeps child console programs (such as "codex app-server") hidden
+    # while preserving their stdin/stdout pipes for Codelight.
+    $pythonShim = @(
+        'import os'
+        'import subprocess'
+        ''
+        'if os.name == "nt":'
+        '    _codelight_original_popen_init = subprocess.Popen.__init__'
+        ''
+        '    def _codelight_hidden_popen_init(self, *args, **kwargs):'
+        '        kwargs["creationflags"] = ('
+        '            kwargs.get("creationflags", 0)'
+        '            | subprocess.CREATE_NO_WINDOW'
+        '        )'
+        '        return _codelight_original_popen_init(self, *args, **kwargs)'
+        ''
+        '    subprocess.Popen.__init__ = _codelight_hidden_popen_init'
+    ) -join [Environment]::NewLine
+
+    Set-Content -LiteralPath $shimFile -Value $pythonShim -Encoding ASCII
+
+    $pythonPathEntries = @()
+    if ($env:PYTHONPATH) {
+        $pythonPathEntries = @($env:PYTHONPATH -split ';')
+    }
+
+    if ($pythonPathEntries -notcontains $shimDir) {
+        if ($env:PYTHONPATH) {
+            $env:PYTHONPATH = "$shimDir;$env:PYTHONPATH"
+        }
+        else {
+            $env:PYTHONPATH = $shimDir
+        }
+    }
+}
+
 function Stop-ExistingCodelightListener {
     $listeners = @(Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue)
 
@@ -104,6 +151,8 @@ if ($Agents -match '(?i)(^|[, ]+)codex($|[, ]+)') {
 
 $argsList = @($codelight, "--name", $Name, "--agents", $Agents)
 if ($CompanionVerbose) { $argsList += "--verbose" }
+
+Enable-HiddenPythonChildProcesses
 
 & $python @argsList
 exit $LASTEXITCODE
